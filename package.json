@@ -32,6 +32,7 @@
 		"vitest": "^4.0.16"
 	},
 	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig-check.json",
 		"build": "tsc --project tsconfig.json",
 		"dev": "as-soon -w src pnpm build",
 		"test": "vitest"
