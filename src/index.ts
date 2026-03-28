@@ -1,6 +1,6 @@
 import {privateKeyToAccount, mnemonicToAccount, LocalAccount} from 'viem/accounts';
 
-import type {EIP1193ProviderWithoutEvents, EIP1193TransactionData} from 'eip-1193';
+import type {EIP1193ProviderWithoutEvents, EIP1193TransactionData, EIP1193TransactionDataOfType2} from 'eip-1193';
 import {
 	Chain,
 	createPublicClient,
@@ -239,17 +239,18 @@ export function extendProviderWithAccounts(
 				accessList: tx.accessList,
 				value: tx.value ? BigInt(tx.value) : undefined,
 			};
-		} else if (tx?.type === '0x2') {
+		} else if ((!tx.type && tx.gasPrice == undefined) || tx?.type === '0x2') {
+			const txOfType2 = tx as EIP1193TransactionDataOfType2; // we coerce here as we allow to make a type 2 tx when type is not defined
 			return {
 				type: 'eip1559',
-				to: tx.to,
-				nonce: tx.nonce ? Number(tx.nonce) : undefined,
-				gas: tx.gas ? BigInt(tx.gas) : undefined,
-				maxFeePerGas: tx.maxFeePerGas ? BigInt(tx.maxFeePerGas) : undefined,
-				maxPriorityFeePerGas: tx.maxPriorityFeePerGas ? BigInt(tx.maxPriorityFeePerGas) : undefined,
-				data: tx.data,
-				accessList: tx.accessList,
-				value: tx.value ? BigInt(tx.value) : undefined,
+				to: txOfType2.to,
+				nonce: txOfType2.nonce ? Number(tx.nonce) : undefined,
+				gas: txOfType2.gas ? BigInt(txOfType2.gas) : undefined,
+				maxFeePerGas: txOfType2.maxFeePerGas ? BigInt(txOfType2.maxFeePerGas) : undefined,
+				maxPriorityFeePerGas: txOfType2.maxPriorityFeePerGas ? BigInt(txOfType2.maxPriorityFeePerGas) : undefined,
+				data: txOfType2.data,
+				accessList: txOfType2.accessList,
+				value: txOfType2.value ? BigInt(txOfType2.value) : undefined,
 				// sidecars
 				// maxFeePerBlobGas
 				// kzg
@@ -259,7 +260,7 @@ export function extendProviderWithAccounts(
 			};
 		} else if (!tx.type || tx.type === '0x0') {
 			return {
-				type: 'eip2930',
+				type: 'legacy',
 				to: tx.to,
 				nonce: tx.nonce ? Number(tx.nonce) : undefined,
 				gas: tx.gas ? BigInt(tx.gas) : undefined,
