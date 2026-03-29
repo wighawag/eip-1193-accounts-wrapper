@@ -15,6 +15,8 @@ import {
 
 export type {EIP1193ProviderWithoutEvents};
 
+export {generateMnemonic, generatePrivateKey} from 'viem/accounts';
+
 export interface ProviderOptions {
 	accounts?:
 		| {
