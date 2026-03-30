@@ -353,4 +353,435 @@ describe('extendProviderWithAccounts', () => {
 			expect(accounts).toHaveLength(2);
 		});
 	});
+
+	describe('impersonation', () => {
+		const IMPERSONATE_ADDRESS = '0x1234567890123456789012345678901234567890' as `0x${string}`;
+
+		describe('list mode', () => {
+			it('includes successfully impersonated addresses in eth_accounts', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const accounts = await provider.request({method: 'eth_accounts'});
+				expect(accounts).toContain(IMPERSONATE_ADDRESS);
+				expect(impersonateAccount).toHaveBeenCalledWith({address: IMPERSONATE_ADDRESS});
+			});
+
+			it('excludes failed impersonation addresses from eth_accounts', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockRejectedValue(new Error('Impersonation failed'));
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const accounts = await provider.request({method: 'eth_accounts'});
+				expect(accounts).not.toContain(IMPERSONATE_ADDRESS);
+				expect(impersonateAccount).toHaveBeenCalledWith({address: IMPERSONATE_ADDRESS});
+			});
+
+			it('caches impersonation - only calls impersonateAccount once per address', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				// First call triggers initialization
+				await provider.request({method: 'eth_accounts'});
+				expect(impersonateAccount).toHaveBeenCalledTimes(1);
+
+				// Second call should use cache
+				await provider.request({method: 'eth_accounts'});
+				expect(impersonateAccount).toHaveBeenCalledTimes(1);
+
+				// Third call should still use cache
+				await provider.request({method: 'eth_requestAccounts'});
+				expect(impersonateAccount).toHaveBeenCalledTimes(1);
+			});
+
+			it('combines local accounts and impersonated addresses', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					accounts: {
+						privateKeys: [TEST_PRIVATE_KEY],
+					},
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const accounts = await provider.request({method: 'eth_accounts'});
+				expect(accounts).toHaveLength(2);
+				expect(accounts).toContain(TEST_ADDRESS);
+				expect(accounts).toContain(IMPERSONATE_ADDRESS);
+			});
+		});
+
+		describe('unknown mode', () => {
+			it('impersonates unknown addresses on-demand for eth_sendTransaction', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_sendTransaction':
+							return '0xtxhash';
+						default:
+							return null;
+					}
+				});
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'unknown',
+					},
+				});
+
+				// eth_accounts should be empty (no local accounts, no pre-impersonated addresses in unknown mode)
+				const accounts = await provider.request({method: 'eth_accounts'});
+				expect(accounts).toEqual([]);
+
+				// Sending transaction from unknown address should trigger impersonation
+				await provider.request({
+					method: 'eth_sendTransaction',
+					params: [{from: IMPERSONATE_ADDRESS, to: TEST_ADDRESS, value: '0x0'}],
+				});
+
+				expect(impersonateAccount).toHaveBeenCalledWith({address: IMPERSONATE_ADDRESS});
+			});
+
+			it('does not impersonate local accounts', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					accounts: {
+						privateKeys: [TEST_PRIVATE_KEY],
+					},
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'unknown',
+					},
+				});
+
+				const accounts = await provider.request({method: 'eth_accounts'});
+				expect(accounts).toContain(TEST_ADDRESS);
+				// Local account should not trigger impersonation
+				expect(impersonateAccount).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('always mode', () => {
+			it('impersonates all accounts including local ones', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					accounts: {
+						privateKeys: [TEST_PRIVATE_KEY],
+					},
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'always',
+					},
+				});
+
+				const accounts = await provider.request({method: 'eth_accounts'});
+				// In 'always' mode, only successfully impersonated accounts are returned
+				expect(accounts).toContain(TEST_ADDRESS);
+				expect(impersonateAccount).toHaveBeenCalledWith({address: TEST_ADDRESS});
+			});
+		});
+
+		describe('signing with impersonated accounts', () => {
+			it('personal_sign forwards to underlying provider for impersonated account', async () => {
+				const baseProvider = createMockProvider();
+				const mockSignature = '0xmocksignature';
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'personal_sign':
+							return mockSignature;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const signature = await provider.request({
+					method: 'personal_sign',
+					params: ['Hello', IMPERSONATE_ADDRESS],
+				} as any);
+
+				expect(signature).toBe(mockSignature);
+				expect(baseProvider.request).toHaveBeenCalledWith({
+					method: 'personal_sign',
+					params: ['Hello', IMPERSONATE_ADDRESS],
+				});
+			});
+
+			it('eth_sign forwards to underlying provider for impersonated account', async () => {
+				const baseProvider = createMockProvider();
+				const mockSignature = '0xmocksignature';
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_sign':
+							return mockSignature;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const signature = await provider.request({
+					method: 'eth_sign',
+					params: [IMPERSONATE_ADDRESS, 'Hello'],
+				} as any);
+
+				expect(signature).toBe(mockSignature);
+				expect(baseProvider.request).toHaveBeenCalledWith({
+					method: 'eth_sign',
+					params: [IMPERSONATE_ADDRESS, 'Hello'],
+				});
+			});
+
+			it('eth_signTypedData forwards to underlying provider for impersonated account', async () => {
+				const baseProvider = createMockProvider();
+				const mockSignature = '0xmocksignature';
+				const typedData = {
+					types: {Person: [{name: 'name', type: 'string'}]},
+					primaryType: 'Person',
+					domain: {name: 'Test'},
+					message: {name: 'Bob'},
+				};
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_signTypedData':
+							return mockSignature;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const signature = await provider.request({
+					method: 'eth_signTypedData',
+					params: [IMPERSONATE_ADDRESS, typedData],
+				} as any);
+
+				expect(signature).toBe(mockSignature);
+				expect(baseProvider.request).toHaveBeenCalledWith({
+					method: 'eth_signTypedData',
+					params: [IMPERSONATE_ADDRESS, typedData],
+				});
+			});
+
+			it('eth_signTypedData_v4 forwards to underlying provider for impersonated account', async () => {
+				const baseProvider = createMockProvider();
+				const mockSignature = '0xmocksignature';
+				const typedData = {
+					types: {Person: [{name: 'name', type: 'string'}]},
+					primaryType: 'Person',
+					domain: {name: 'Test'},
+					message: {name: 'Bob'},
+				};
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_signTypedData_v4':
+							return mockSignature;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const signature = await provider.request({
+					method: 'eth_signTypedData_v4',
+					params: [IMPERSONATE_ADDRESS, typedData],
+				} as any);
+
+				expect(signature).toBe(mockSignature);
+				expect(baseProvider.request).toHaveBeenCalledWith({
+					method: 'eth_signTypedData_v4',
+					params: [IMPERSONATE_ADDRESS, typedData],
+				});
+			});
+
+			it('signing fails for impersonated account that failed impersonation', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockRejectedValue(new Error('Impersonation failed'));
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				await expect(
+					provider.request({
+						method: 'personal_sign',
+						params: ['Hello', IMPERSONATE_ADDRESS],
+					} as any),
+				).rejects.toThrow('Account not available for signing');
+			});
+		});
+
+		describe('eth_sendTransaction with impersonation', () => {
+			it('forwards transaction to underlying provider for impersonated account', async () => {
+				const baseProvider = createMockProvider();
+				const mockTxHash = '0xtxhash123';
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_sendTransaction':
+							return mockTxHash;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				const txHash = await provider.request({
+					method: 'eth_sendTransaction',
+					params: [{from: IMPERSONATE_ADDRESS, to: TEST_ADDRESS, value: '0x0'}],
+				});
+
+				expect(txHash).toBe(mockTxHash);
+				expect(impersonateAccount).toHaveBeenCalledWith({address: IMPERSONATE_ADDRESS});
+			});
+
+			it('fails transaction for impersonated account that failed impersonation', async () => {
+				const baseProvider = createMockProvider();
+				const impersonateAccount = vi.fn().mockRejectedValue(new Error('Impersonation failed'));
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				await expect(
+					provider.request({
+						method: 'eth_sendTransaction',
+						params: [{from: IMPERSONATE_ADDRESS, to: TEST_ADDRESS, value: '0x0'}],
+					}),
+				).rejects.toThrow('Account not available');
+			});
+
+			it('uses cached impersonation for subsequent transactions', async () => {
+				const baseProvider = createMockProvider();
+				const mockTxHash = '0xtxhash123';
+				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
+					switch (method) {
+						case 'eth_chainId':
+							return '0x1';
+						case 'eth_sendTransaction':
+							return mockTxHash;
+						default:
+							return null;
+					}
+				});
+				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
+
+				const provider = extendProviderWithAccounts(baseProvider, {
+					impersonate: {
+						impersonator: {impersonateAccount},
+						mode: 'list',
+						list: [IMPERSONATE_ADDRESS],
+					},
+				});
+
+				// First transaction
+				await provider.request({
+					method: 'eth_sendTransaction',
+					params: [{from: IMPERSONATE_ADDRESS, to: TEST_ADDRESS, value: '0x0'}],
+				});
+
+				// Second transaction from same address
+				await provider.request({
+					method: 'eth_sendTransaction',
+					params: [{from: IMPERSONATE_ADDRESS, to: TEST_ADDRESS, value: '0x1'}],
+				});
+
+				// impersonateAccount should only be called once (cached)
+				expect(impersonateAccount).toHaveBeenCalledTimes(1);
+			});
+		});
+	});
 });

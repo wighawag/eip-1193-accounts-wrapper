@@ -46,61 +46,217 @@ export function extendProviderWithAccounts(
 ): EIP1193ProviderWithoutEvents {
 	let clients: {wallet: WalletClient<Transport, Chain>; public: PublicClient<Transport, Chain>} | undefined;
 
+	// Impersonation cache: address (lowercase) -> success/failure
+	const impersonationCache = new Map<string, boolean>();
+
+	// Track addresses that need impersonation based on mode
+	const addressesToImpersonate: `0x${string}`[] = [];
+
+	// Initialization promise to prevent duplicate initialization
+	let initPromise: Promise<void> | undefined;
+
+	// Local accounts from private keys or mnemonic
+	const accounts: LocalAccount[] = [];
+	if (options?.accounts) {
+		const accountsProvided = options.accounts;
+		if ('privateKeys' in accountsProvided && accountsProvided.privateKeys) {
+			for (const pk of accountsProvided.privateKeys) {
+				const account = privateKeyToAccount(pk);
+				accounts.push(account);
+			}
+		} else if ('mnemonic' in accountsProvided && accountsProvided.mnemonic) {
+			const num = accountsProvided.numAccounts || 10;
+			for (let i = 0; i < num; i++) {
+				const account = mnemonicToAccount(accountsProvided.mnemonic, {
+					accountIndex: i,
+				});
+				accounts.push(account);
+			}
+		}
+	}
+
+	// Initialize impersonation for configured addresses
+	async function initialize(): Promise<void> {
+		if (initPromise) return initPromise;
+
+		initPromise = (async () => {
+			// Determine addresses to impersonate based on mode
+			if (options?.impersonate?.mode === 'list') {
+				addressesToImpersonate.push(...options.impersonate.list);
+			} else if (options?.impersonate?.mode === 'always') {
+				// All accounts including LocalAccounts will use impersonation
+				addressesToImpersonate.push(...accounts.map((a) => a.address));
+			}
+			// For 'unknown' mode, we impersonate on-demand for non-local accounts
+
+			// Pre-impersonate known addresses
+			for (const address of addressesToImpersonate) {
+				await attemptImpersonation(address);
+			}
+		})();
+
+		return initPromise;
+	}
+
+	// Attempt impersonation for an address, caching the result
+	async function attemptImpersonation(address: `0x${string}`): Promise<boolean> {
+		const normalizedAddress = address.toLowerCase();
+
+		// Check cache first
+		const cached = impersonationCache.get(normalizedAddress);
+		if (cached !== undefined) {
+			return cached;
+		}
+
+		// Attempt impersonation
+		if (!options?.impersonate) {
+			impersonationCache.set(normalizedAddress, false);
+			return false;
+		}
+
+		try {
+			await options.impersonate.impersonator.impersonateAccount({address});
+			impersonationCache.set(normalizedAddress, true);
+			return true;
+		} catch (error) {
+			impersonationCache.set(normalizedAddress, false);
+			return false;
+		}
+	}
+
+	// Get list of available accounts (local + successfully impersonated)
+	function getAvailableAccounts(): `0x${string}`[] {
+		const available: `0x${string}`[] = [];
+
+		// Local accounts are always available (unless mode is 'always')
+		if (options?.impersonate?.mode !== 'always') {
+			for (const account of accounts) {
+				available.push(account.address);
+			}
+		}
+
+		// Add successfully impersonated addresses
+		for (const address of addressesToImpersonate) {
+			const normalized = address.toLowerCase();
+			if (impersonationCache.get(normalized) === true) {
+				// Avoid duplicates
+				if (!available.some((a) => a.toLowerCase() === normalized)) {
+					available.push(address);
+				}
+			}
+		}
+
+		return available;
+	}
+
+	// Check if an address should use impersonation
+	function shouldImpersonate(address: string): boolean {
+		if (options?.impersonate?.mode === 'always') {
+			return true;
+		} else if (options?.impersonate?.mode === 'unknown') {
+			return !accounts.some((a) => a.address.toLowerCase() === address.toLowerCase());
+		} else if (options?.impersonate?.mode === 'list') {
+			return options.impersonate.list.some((a) => a.toLowerCase() === address.toLowerCase());
+		}
+		return false;
+	}
+
 	const accountHandlers: Record<string, (params: any[]) => Promise<any>> = {
 		eth_sendTransaction: async (params) => {
 			const tx: EIP1193TransactionData = params[0];
 			if (options?.doNotFillMissingFields) {
 				validateTransaction(tx);
 			}
+			await initialize();
+
 			const viemTx = toViemTransaction(tx);
 			const account = accounts.find((a) => a.address.toLowerCase() === tx.from.toLowerCase());
 			const impersonate = options?.impersonate;
-			const clients = await getClients();
+
+			// Use local account if available and not in 'always' mode
 			if (impersonate?.mode !== 'always' && account) {
+				const clients = await getClients();
 				return clients.wallet.sendTransaction({
 					...viemTx,
 					account,
 				} as any);
-			} else if (impersonate) {
-				if (shouldImpersonate(tx.from)) {
-					await impersonate.impersonator.impersonateAccount({
-						address: tx.from as `0x${string}`,
-					});
+			}
 
-					return await provider.request({
+			// Check if impersonation is allowed and successful
+			if (shouldImpersonate(tx.from)) {
+				const success = await attemptImpersonation(tx.from as `0x${string}`);
+				if (success) {
+					return await providerToExtend.request({
 						method: 'eth_sendTransaction',
 						params: [tx],
 					});
-				} else {
-					throw new Error('Account not available, not even as impersonation');
 				}
-			} else {
-				throw new Error('Account not available');
 			}
+
+			throw new Error('Account not available');
 		},
+
 		eth_accounts: async () => {
-			return accounts.map((a) => a.address);
+			await initialize();
+			return getAvailableAccounts();
 		},
+
 		eth_requestAccounts: async () => {
-			return accounts.map((a) => a.address);
+			await initialize();
+			return getAvailableAccounts();
 		},
+
 		personal_sign: async (params) => {
 			const [message, address] = params;
-			const account = accounts.find((a) => a.address === address);
-			if (!account) {
-				throw new Error('Account not available for signing');
+			await initialize();
+
+			// Try local account first (unless mode is 'always')
+			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
+			if (account && options?.impersonate?.mode !== 'always') {
+				const prefixedMessage = `\x19Ethereum Signed Message:\n${message.length}${message}`;
+				return account.signMessage({message: prefixedMessage});
 			}
-			const prefixedMessage = `\x19Ethereum Signed Message:\n${message.length}${message}`;
-			return account.signMessage({message: prefixedMessage});
+
+			// Try impersonation
+			if (shouldImpersonate(address)) {
+				const success = await attemptImpersonation(address as `0x${string}`);
+				if (success) {
+					// Forward to underlying provider for impersonated signing
+					return providerToExtend.request({
+						method: 'personal_sign',
+						params: [message, address],
+					});
+				}
+			}
+
+			throw new Error('Account not available for signing');
 		},
+
 		eth_sign: async (params) => {
 			const [address, message] = params;
-			const account = accounts.find((a) => a.address === address);
-			if (!account) {
-				throw new Error('Account not available for signing');
+			await initialize();
+
+			// Try local account first (unless mode is 'always')
+			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
+			if (account && options?.impersonate?.mode !== 'always') {
+				return account.signMessage({message});
 			}
-			return account.signMessage({message});
+
+			// Try impersonation
+			if (shouldImpersonate(address)) {
+				const success = await attemptImpersonation(address as `0x${string}`);
+				if (success) {
+					// Forward to underlying provider for impersonated signing
+					return providerToExtend.request({
+						method: 'eth_sign',
+						params: [address, message],
+					});
+				}
+			}
+
+			throw new Error('Account not available for signing');
 		},
+
 		eth_signTransaction: async (params) => {
 			throw new Error('eth_signTransaction not implemented');
 			// const tx = params[0];
@@ -110,21 +266,55 @@ export function extendProviderWithAccounts(
 			// }
 			// return account.signTransaction(signTxParams);
 		},
+
 		eth_signTypedData: async (params) => {
 			const [address, typedData] = params;
-			const account = accounts.find((a) => a.address === address);
-			if (!account) {
-				throw new Error('Account not available for signing');
+			await initialize();
+
+			// Try local account first (unless mode is 'always')
+			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
+			if (account && options?.impersonate?.mode !== 'always') {
+				return account.signTypedData(typedData);
 			}
-			return account.signTypedData(typedData);
+
+			// Try impersonation
+			if (shouldImpersonate(address)) {
+				const success = await attemptImpersonation(address as `0x${string}`);
+				if (success) {
+					// Forward to underlying provider for impersonated signing
+					return providerToExtend.request({
+						method: 'eth_signTypedData',
+						params: [address, typedData],
+					});
+				}
+			}
+
+			throw new Error('Account not available for signing');
 		},
+
 		eth_signTypedData_v4: async (params) => {
 			const [address, typedData] = params;
-			const account = accounts.find((a) => a.address === address);
-			if (!account) {
-				throw new Error('Account not available for signing');
+			await initialize();
+
+			// Try local account first (unless mode is 'always')
+			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
+			if (account && options?.impersonate?.mode !== 'always') {
+				return account.signTypedData(typedData);
 			}
-			return account.signTypedData(typedData);
+
+			// Try impersonation
+			if (shouldImpersonate(address)) {
+				const success = await attemptImpersonation(address as `0x${string}`);
+				if (success) {
+					// Forward to underlying provider for impersonated signing
+					return providerToExtend.request({
+						method: 'eth_signTypedData_v4',
+						params: [address, typedData],
+					});
+				}
+			}
+
+			throw new Error('Account not available for signing');
 		},
 	};
 
@@ -132,6 +322,7 @@ export function extendProviderWithAccounts(
 		...accountHandlers,
 		...options?.handlers,
 	};
+
 	const provider = {
 		request: async (args: {method: string; params?: any[]}) => {
 			const {method, params = []} = args;
@@ -177,27 +368,6 @@ export function extendProviderWithAccounts(
 		return clients;
 	}
 
-	const accounts: LocalAccount[] = [];
-	if (options?.accounts) {
-		const accountsProvided = options.accounts;
-		if ('privateKeys' in accountsProvided && accountsProvided.privateKeys) {
-			for (const pk of accountsProvided.privateKeys) {
-				const account = privateKeyToAccount(pk);
-				accounts.push(account);
-				// await client.tevmSetAccount({ address: account.address, balance: 0n });
-			}
-		} else if ('mnemonic' in accountsProvided && accountsProvided.mnemonic) {
-			const num = accountsProvided.numAccounts || 10;
-			for (let i = 0; i < num; i++) {
-				const account = mnemonicToAccount(accountsProvided.mnemonic, {
-					accountIndex: i,
-				});
-				accounts.push(account);
-				// await client.tevmSetAccount({ address: account.address, balance: 0n });
-			}
-		}
-	}
-
 	function validateTransaction(tx: EIP1193TransactionData) {
 		const errors: string[] = [];
 		if (!tx.from) errors.push('from');
@@ -217,17 +387,6 @@ export function extendProviderWithAccounts(
 			throw new Error(`Missing mandatory fields: ${errors.join(', ')}`);
 		}
 	}
-
-	const shouldImpersonate = (address: string) => {
-		if (options?.impersonate?.mode === 'always') {
-			return true;
-		} else if (options?.impersonate?.mode == 'unknown') {
-			return !accounts.some((a) => a.address.toLowerCase() === address.toLowerCase());
-		} else if (options?.impersonate?.mode === 'list') {
-			return options.impersonate.list.includes(address as `0x${string}`) || false;
-		}
-		return false;
-	};
 
 	function toViemTransaction(tx: EIP1193TransactionData): Omit<SendTransactionParameters, 'account' | 'chain'> {
 		if (tx?.type === '0x1') {
