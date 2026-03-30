@@ -128,13 +128,6 @@ export function extendProviderWithAccounts(
 	function getAvailableAccounts(): `0x${string}`[] {
 		const available: `0x${string}`[] = [];
 
-		// Local accounts are always available (unless mode is 'always')
-		if (options?.impersonate?.mode !== 'always') {
-			for (const account of accounts) {
-				available.push(account.address);
-			}
-		}
-
 		// Add successfully impersonated addresses
 		for (const address of addressesToImpersonate) {
 			const normalized = address.toLowerCase();
@@ -143,6 +136,13 @@ export function extendProviderWithAccounts(
 				if (!available.some((a) => a.toLowerCase() === normalized)) {
 					available.push(address);
 				}
+			}
+		}
+
+		// Local accounts are always available (unless mode is 'always')
+		if (options?.impersonate?.mode !== 'always') {
+			for (const account of accounts) {
+				available.push(account.address);
 			}
 		}
 
