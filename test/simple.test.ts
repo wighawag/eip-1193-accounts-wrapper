@@ -104,7 +104,9 @@ describe('extendProviderWithAccounts', () => {
 	});
 
 	describe('eth_sign', () => {
-		it('signs a message', async () => {
+		// eth_sign is deliberately unsupported: it signs an unprefixed hash, which is
+		// indistinguishable from a transaction signature. See src/index.ts.
+		it('throws unsupported for a known account', async () => {
 			const baseProvider = createMockProvider();
 			const provider = extendProviderWithAccounts(baseProvider, {
 				accounts: {
@@ -112,17 +114,15 @@ describe('extendProviderWithAccounts', () => {
 				},
 			});
 
-			const message = 'Hello, World!';
-			const signature = await provider.request({
-				method: 'eth_sign',
-				params: [TEST_ADDRESS, message],
-			} as any);
-
-			expect(signature).toBeDefined();
-			expect(signature).toMatch(/^0x[a-fA-F0-9]+$/);
+			await expect(
+				provider.request({
+					method: 'eth_sign',
+					params: [TEST_ADDRESS, 'Hello, World!'],
+				} as any),
+			).rejects.toThrow(/eth_sign is not supported/i);
 		});
 
-		it('throws error for unknown account', async () => {
+		it('throws unsupported for an unknown account', async () => {
 			const baseProvider = createMockProvider();
 			const provider = extendProviderWithAccounts(baseProvider, {
 				accounts: {
@@ -136,7 +136,7 @@ describe('extendProviderWithAccounts', () => {
 					method: 'eth_sign',
 					params: [unknownAddress, 'test'],
 				} as any),
-			).rejects.toThrow('Account not available for signing');
+			).rejects.toThrow(/eth_sign is not supported/i);
 		});
 	});
 
@@ -553,19 +553,13 @@ describe('extendProviderWithAccounts', () => {
 				});
 			});
 
-			it('eth_sign forwards to underlying provider for impersonated account', async () => {
+			it('eth_sign throws unsupported even for an impersonated account', async () => {
+				// Behaviour change in 0.1.2: eth_sign is refused for every account rather
+				// than forwarded, so the method is uniformly unavailable through this
+				// wrapper. Forwarding it only for impersonated accounts would mean the
+				// same method call succeeds or throws depending on how the account was
+				// configured, which callers cannot rely on either way.
 				const baseProvider = createMockProvider();
-				const mockSignature = '0xmocksignature';
-				(baseProvider.request as any).mockImplementation(async ({method}: {method: string}) => {
-					switch (method) {
-						case 'eth_chainId':
-							return '0x1';
-						case 'eth_sign':
-							return mockSignature;
-						default:
-							return null;
-					}
-				});
 				const impersonateAccount = vi.fn().mockResolvedValue(undefined);
 
 				const provider = extendProviderWithAccounts(baseProvider, {
@@ -576,16 +570,12 @@ describe('extendProviderWithAccounts', () => {
 					},
 				});
 
-				const signature = await provider.request({
-					method: 'eth_sign',
-					params: [IMPERSONATE_ADDRESS, 'Hello'],
-				} as any);
-
-				expect(signature).toBe(mockSignature);
-				expect(baseProvider.request).toHaveBeenCalledWith({
-					method: 'eth_sign',
-					params: [IMPERSONATE_ADDRESS, 'Hello'],
-				});
+				await expect(
+					provider.request({
+						method: 'eth_sign',
+						params: [IMPERSONATE_ADDRESS, 'Hello'],
+					} as any),
+				).rejects.toThrow(/eth_sign is not supported/i);
 			});
 
 			it('eth_signTypedData forwards to underlying provider for impersonated account', async () => {

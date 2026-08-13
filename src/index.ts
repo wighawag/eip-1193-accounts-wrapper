@@ -40,6 +40,18 @@ export interface ProviderOptions {
 	handlers?: Record<string, (params?: any[]) => Promise<any>>;
 }
 
+/**
+ * True when `value` is a `0x`-prefixed, even-length hex string, i.e. a valid
+ * encoding of a whole number of bytes.
+ *
+ * `personal_sign` is specified to take the message as hex-encoded bytes, but
+ * some dapps still pass plain text. The even-length requirement matters: `0xabc`
+ * cannot be decoded to bytes, so it is text as far as we are concerned.
+ */
+function isByteEncoded(value: string): value is `0x${string}` {
+	return value.startsWith('0x') && value.length % 2 === 0 && /^[0-9a-fA-F]*$/.test(value.slice(2));
+}
+
 export function extendProviderWithAccounts(
 	providerToExtend: EIP1193ProviderWithoutEvents,
 	options?: ProviderOptions,
@@ -207,14 +219,21 @@ export function extendProviderWithAccounts(
 		},
 
 		personal_sign: async (params) => {
-			const [message, address] = params;
+			const [data, address] = params;
 			await initialize();
 
 			// Try local account first (unless mode is 'always')
 			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
 			if (account && options?.impersonate?.mode !== 'always') {
-				const prefixedMessage = `\x19Ethereum Signed Message:\n${message.length}${message}`;
-				return account.signMessage({message: prefixedMessage});
+				// `personal_sign` takes the message as hex-encoded BYTES. viem applies the
+				// EIP-191 prefix (with the correct byte length) itself, so we must hand it
+				// the value unprefixed and tell it whether it is raw bytes or text.
+				// Never build the `\x19Ethereum Signed Message:\n<len>` prefix here: doing so
+				// gets it applied twice, and a `.length` taken on the hex string counts
+				// characters rather than the bytes EIP-191 requires.
+				// Some dapps still pass a plain (non-hex) string, so fall back to treating
+				// the value as UTF-8 text, which viem also prefixes correctly.
+				return account.signMessage({message: isByteEncoded(data) ? {raw: data} : data});
 			}
 
 			// Try impersonation
@@ -224,7 +243,7 @@ export function extendProviderWithAccounts(
 					// Forward to underlying provider for impersonated signing
 					return providerToExtend.request({
 						method: 'personal_sign',
-						params: [message, address],
+						params: [data, address],
 					});
 				}
 			}
@@ -233,28 +252,20 @@ export function extendProviderWithAccounts(
 		},
 
 		eth_sign: async (params) => {
-			const [address, message] = params;
-			await initialize();
-
-			// Try local account first (unless mode is 'always')
-			const account = accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
-			if (account && options?.impersonate?.mode !== 'always') {
-				return account.signMessage({message});
-			}
-
-			// Try impersonation
-			if (shouldImpersonate(address)) {
-				const success = await attemptImpersonation(address as `0x${string}`);
-				if (success) {
-					// Forward to underlying provider for impersonated signing
-					return providerToExtend.request({
-						method: 'eth_sign',
-						params: [address, message],
-					});
-				}
-			}
-
-			throw new Error('Account not available for signing');
+			// `eth_sign` signs an arbitrary 32-byte hash with NO EIP-191 prefix, so a
+			// signature it produces is indistinguishable from a signature over a
+			// transaction. That makes it a blind-signing footgun, and every major wallet
+			// has removed or permanently disabled it. We refuse rather than implement it.
+			//
+			// This previously called `signMessage()`, which applies the personal_sign
+			// prefix: that is `personal_sign` behaviour wearing the `eth_sign` name, and
+			// returned a plausible-looking signature that no `eth_sign` verifier accepts.
+			// Failing loudly is better than silently signing the wrong digest.
+			//
+			// Callers wanting a prefixed message signature should use `personal_sign`.
+			throw new Error(
+				'eth_sign is not supported: it signs an unprefixed hash and is unsafe. Use personal_sign or eth_signTypedData_v4 instead.',
+			);
 		},
 
 		eth_signTransaction: async (params) => {

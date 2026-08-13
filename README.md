@@ -13,7 +13,7 @@ When working with EIP-1193 providers (like those from browser wallets), you some
 - **Private key accounts** – Load accounts from hex-encoded private keys
 - **Mnemonic accounts** – Derive multiple accounts from a BIP-39 mnemonic phrase
 - **Transaction signing** – Signs and sends transactions via `eth_sendTransaction`
-- **Message signing** – Supports `personal_sign`, `eth_sign`, `eth_signTypedData`, and `eth_signTypedData_v4`
+- **Message signing** – Supports `personal_sign`, `eth_signTypedData`, and `eth_signTypedData_v4` (`eth_sign` is deliberately unsupported)
 - **Account impersonation** – Impersonate addresses for testing (requires compatible backend like Anvil)
 - **Custom handlers** – Override any RPC method with your own implementation
 
@@ -136,8 +136,8 @@ The following methods are handled locally when accounts are configured:
 | `eth_accounts` | Returns configured account addresses |
 | `eth_requestAccounts` | Returns configured account addresses |
 | `eth_sendTransaction` | Signs and sends transactions |
-| `personal_sign` | Signs messages with personal prefix |
-| `eth_sign` | Signs raw messages |
+| `personal_sign` | Signs a message per EIP-191. Accepts the message as hex-encoded bytes (the spec'd form) or as a plain UTF-8 string |
+| `eth_sign` | **Unsupported, throws.** It signs an unprefixed hash, so its output is indistinguishable from a transaction signature. Use `personal_sign` or `eth_signTypedData_v4` |
 | `eth_signTypedData` | Signs typed data (EIP-712) |
 | `eth_signTypedData_v4` | Signs typed data v4 (EIP-712) |
 
