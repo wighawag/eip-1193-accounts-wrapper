@@ -1,6 +1,16 @@
 import {privateKeyToAccount, mnemonicToAccount, LocalAccount} from 'viem/accounts';
 
-import type {EIP1193ProviderWithoutEvents, EIP1193TransactionData, EIP1193TransactionDataOfType2} from 'eip-1193';
+import type {
+	CoreMethods,
+	EIP1193CoreProvider,
+	EIP1193GenericRequestProvider,
+	EIP1193ProviderWithoutEvents,
+	EIP1193TransactionData,
+	EIP1193TransactionDataOfType2,
+	RequestRPC,
+	RPCMethods,
+	WalletOnlyMethods,
+} from 'eip-1193';
 import {
 	Chain,
 	createPublicClient,
@@ -13,7 +23,18 @@ import {
 	WalletClient,
 } from 'viem';
 
-export type {EIP1193ProviderWithoutEvents};
+// `EIP1193ProviderWithoutEvents` stays exported for code that imported it from here. Since eip-1193
+// 0.7 it is the browser-wallet surface; `EIP1193CoreProvider` is what this package takes and returns.
+export type {EIP1193CoreProvider, EIP1193ProviderWithoutEvents};
+
+/**
+ * The methods the extended provider serves whatever it wraps: the core methods every provider
+ * serves, plus `eth_requestAccounts`, which this package answers itself.
+ */
+export type AccountsProviderMethods = CoreMethods & Pick<WalletOnlyMethods, 'eth_requestAccounts'>;
+
+/** What {@link extendProviderWithAccounts} returns when no method table is named. */
+export type EIP1193AccountsProvider = RequestRPC<AccountsProviderMethods>;
 
 export {generateMnemonic, generatePrivateKey} from 'viem/accounts';
 
@@ -52,10 +73,42 @@ function isByteEncoded(value: string): value is `0x${string}` {
 	return value.startsWith('0x') && value.length % 2 === 0 && /^[0-9a-fA-F]*$/.test(value.slice(2));
 }
 
+/**
+ * Wraps `providerToExtend` so that it holds accounts: `eth_accounts`, `eth_requestAccounts`,
+ * `eth_sendTransaction`, `personal_sign` and `eth_signTypedData(_v4)` are answered with the local
+ * keys (or by impersonation), and every other request is forwarded to `providerToExtend` unchanged.
+ *
+ * The provider to extend is an `EIP1193CoreProvider`, the methods a browser wallet, a JSON-RPC node
+ * and a plain HTTP node all serve, because that is all this function asks of it. Any of those is
+ * accepted as is.
+ *
+ * What the result can serve beyond the core methods depends on the provider it forwards to, which
+ * this function cannot see. By default it is typed as an {@link EIP1193AccountsProvider}: the core
+ * methods plus `eth_requestAccounts`, so it fits any `EIP1193CoreProvider` slot. A caller who knows
+ * more names the table, an unchecked claim like a cast:
+ *
+ *     const node = extendProviderWithAccounts<NodeMethods>(nodeProvider, options);
+ *
+ * The non-generic overload comes first so that, without a type argument, the result is always the
+ * accounts provider.
+ */
 export function extendProviderWithAccounts(
-	providerToExtend: EIP1193ProviderWithoutEvents,
+	providerToExtend: EIP1193CoreProvider,
 	options?: ProviderOptions,
-): EIP1193ProviderWithoutEvents {
+): EIP1193AccountsProvider;
+/**
+ * Same as above, with the result typed with the method table `T` that `providerToExtend` serves
+ * (`NodeMethods`, `WalletMethods`, ...). Nothing checks that claim: it is like a cast.
+ */
+export function extendProviderWithAccounts<T extends RPCMethods>(
+	providerToExtend: EIP1193CoreProvider,
+	options?: ProviderOptions,
+): RequestRPC<T & AccountsProviderMethods>;
+// The overloads carry the types; the implementation only needs a shape both results satisfy.
+export function extendProviderWithAccounts(
+	providerToExtend: EIP1193CoreProvider,
+	options?: ProviderOptions,
+): {request: unknown} {
 	let clients: {wallet: WalletClient<Transport, Chain>; public: PublicClient<Transport, Chain>} | undefined;
 
 	// Impersonation cache: address (lowercase) -> success/failure
@@ -339,14 +392,18 @@ export function extendProviderWithAccounts(
 			const {method, params = []} = args;
 			const handler = handlers[method];
 			if (!handler) {
-				return providerToExtend.request({
+				// A genuine boundary: any method is forwarded, including ones outside the core table
+				// (`hardhat_*`, `wallet_*`, ...), so the method name is a runtime string here.
+				return (providerToExtend as unknown as EIP1193GenericRequestProvider).request({
 					method: args.method,
 					params: args.params,
-				} as any);
+				});
 			}
 			return handler(params);
 		},
-	} as EIP1193ProviderWithoutEvents;
+		// The router above dispatches on a runtime method name, so it cannot satisfy the per-method
+		// overloads of a typed provider by itself: this cast is where the types are asserted.
+	} as unknown as EIP1193AccountsProvider;
 
 	async function getClients() {
 		if (clients) {

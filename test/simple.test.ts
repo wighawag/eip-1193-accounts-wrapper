@@ -1,6 +1,6 @@
 import {describe, it, expect, vi} from 'vitest';
 import {extendProviderWithAccounts} from '../src/index.js';
-import type {EIP1193ProviderWithoutEvents} from 'eip-1193';
+import type {EIP1193CoreProvider} from 'eip-1193';
 
 // Test private key (Hardhat/Foundry default account #0)
 const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
@@ -10,7 +10,7 @@ const TEST_ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const TEST_MNEMONIC = 'test test test test test test test test test test test junk';
 
 // Create a mock base provider
-function createMockProvider(): EIP1193ProviderWithoutEvents {
+function createMockProvider(): EIP1193CoreProvider {
 	return {
 		request: vi.fn(async ({method}: {method: string; params?: readonly unknown[]}) => {
 			switch (method) {
@@ -34,7 +34,7 @@ function createMockProvider(): EIP1193ProviderWithoutEvents {
 					return null;
 			}
 		}),
-	} as unknown as EIP1193ProviderWithoutEvents;
+	} as unknown as EIP1193CoreProvider;
 }
 
 describe('extendProviderWithAccounts', () => {

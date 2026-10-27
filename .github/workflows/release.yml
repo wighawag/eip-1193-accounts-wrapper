@@ -1,0 +1,83 @@
+name: release
+
+# Changesets release flow:
+#   1. Land PRs that include a changeset (`.changeset/*.md`) on main.
+#   2. This workflow opens/updates a "Version Packages" PR that bumps the version
+#      and updates the changelog from the pending changesets.
+#   3. Merging that PR (which removes the changesets) makes this workflow run
+#      `changeset publish`, publishing the package to npm.
+#
+# Auth is npm Trusted Publishing (OIDC): NO NPM_TOKEN secret. npm trusts this
+# repo + workflow (release.yml) via the trusted publisher registered on the
+# package's npmjs.com settings. The OIDC handshake needs `id-token: write`,
+# Node >= 22 (npm CLI >= 11.5.1), and pnpm 10.x; publishes are stamped with
+# provenance.
+#
+# One-time setup, per package: OIDC cannot publish the FIRST version of a
+# package (npm/cli#8544), but eip-1193-accounts-wrapper already exists on npm
+# (0.2.0 was published by hand), so all it needs is a trusted publisher entry on
+# npmjs.com pointing at this repo and this workflow filename. Until that entry
+# exists, the publish step fails with an auth error; re-run this workflow
+# (workflow_dispatch) once it is added.
+#
+# Provenance requires `repository.url` in package.json to match this repo.
+on:
+  push:
+    branches: [main]
+  # Manual trigger from the Actions tab, e.g. to (re-)run the Version-PR / publish
+  # step after a merge that did not emit a push event (a GITHUB_TOKEN API merge
+  # does not trigger `on: push`), or to re-publish idempotently.
+  workflow_dispatch: {}
+
+# Serialize release runs on main, but NEVER cancel an in-progress one:
+# `changeset publish` may be mid-publish, and cancelling it would drop the
+# release. `changeset publish` is idempotent (it skips versions already on npm),
+# so letting each queued run finish is always safe.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        # NO `version` input: the action reads `packageManager` from package.json.
+        # Setting both fails with ERR_PNPM_BAD_PM_VERSION.
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24 # >= 22 required for npm OIDC trusted publishing
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Publishing is gated on the type tests and the tests, not only on the
+      # build: same commands as test.yml.
+      - name: Typecheck and test
+        run: pnpm typecheck && pnpm test
+
+      - name: Create Release PR or Publish
+        uses: changesets/action@v1
+        with:
+          # release:ci runs prepublishOnly (format check, build, published type
+          # imports check) then `changeset publish` (the action itself handles
+          # git commits/tags, so no git push here). No NPM_TOKEN: npm detects the
+          # OIDC environment and authenticates via the registered trusted
+          # publisher.
+          publish: pnpm release:ci
+          version: pnpm changeset version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
