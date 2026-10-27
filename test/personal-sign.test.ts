@@ -2,13 +2,13 @@ import {describe, it, expect, vi} from 'vitest';
 import {recoverMessageAddress, stringToHex, getAddress} from 'viem';
 import {privateKeyToAccount} from 'viem/accounts';
 import {extendProviderWithAccounts} from '../src/index.js';
-import type {EIP1193ProviderWithoutEvents} from 'eip-1193';
+import type {EIP1193CoreProvider} from 'eip-1193';
 
 // Hardhat/Foundry default account #0
 const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const TEST_ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 
-function createMockProvider(): EIP1193ProviderWithoutEvents {
+function createMockProvider(): EIP1193CoreProvider {
 	return {
 		request: vi.fn(async ({method}: {method: string; params?: readonly unknown[]}) => {
 			switch (method) {
@@ -18,7 +18,7 @@ function createMockProvider(): EIP1193ProviderWithoutEvents {
 					return null;
 			}
 		}),
-	} as unknown as EIP1193ProviderWithoutEvents;
+	} as unknown as EIP1193CoreProvider;
 }
 
 function createProvider() {
@@ -34,19 +34,20 @@ function byteLength(message: string): number {
 /** Sign `message` by passing it over the wire the way a dapp does: hex-encoded bytes. */
 async function signAsHex(message: string): Promise<`0x${string}`> {
 	const provider = createProvider();
-	return (await provider.request({
+	return await provider.request({
 		method: 'personal_sign',
 		params: [stringToHex(message), TEST_ADDRESS],
-	} as any)) as `0x${string}`;
+	});
 }
 
 /** Sign `message` by passing it as a plain (non-hex) string, which some dapps still do. */
 async function signAsPlainString(message: string): Promise<`0x${string}`> {
 	const provider = createProvider();
-	return (await provider.request({
+	return await provider.request({
 		method: 'personal_sign',
-		params: [message, TEST_ADDRESS],
-	} as any)) as `0x${string}`;
+		// Deliberately NOT hex: the point of this helper is the plain-text input the type forbids.
+		params: [message as `0x${string}`, TEST_ADDRESS],
+	});
 }
 
 describe('personal_sign / EIP-191', () => {
@@ -148,10 +149,10 @@ describe('personal_sign / EIP-191', () => {
 			const provider = createProvider();
 			const raw = '0x48656c6c6f' as const; // "Hello"
 
-			const signature = (await provider.request({
+			const signature = await provider.request({
 				method: 'personal_sign',
 				params: [raw, TEST_ADDRESS],
-			} as any)) as `0x${string}`;
+			});
 
 			const recoveredAsBytes = await recoverMessageAddress({message: {raw}, signature});
 			expect(getAddress(recoveredAsBytes)).toBe(getAddress(TEST_ADDRESS));
@@ -165,10 +166,10 @@ describe('personal_sign / EIP-191', () => {
 			const provider = createProvider();
 			const raw = '0xdeadbeef00ff' as const;
 
-			const signature = (await provider.request({
+			const signature = await provider.request({
 				method: 'personal_sign',
 				params: [raw, TEST_ADDRESS],
-			} as any)) as `0x${string}`;
+			});
 
 			const recovered = await recoverMessageAddress({message: {raw}, signature});
 			expect(getAddress(recovered)).toBe(getAddress(TEST_ADDRESS));
@@ -180,10 +181,10 @@ describe('personal_sign / EIP-191', () => {
 			const provider = createProvider();
 			const message = '0xabc';
 
-			const signature = (await provider.request({
+			const signature = await provider.request({
 				method: 'personal_sign',
 				params: [message, TEST_ADDRESS],
-			} as any)) as `0x${string}`;
+			});
 
 			const recovered = await recoverMessageAddress({message, signature});
 			expect(getAddress(recovered)).toBe(getAddress(TEST_ADDRESS));
@@ -193,10 +194,10 @@ describe('personal_sign / EIP-191', () => {
 			const provider = createProvider();
 			const message = '0xhello world';
 
-			const signature = (await provider.request({
+			const signature = await provider.request({
 				method: 'personal_sign',
 				params: [message, TEST_ADDRESS],
-			} as any)) as `0x${string}`;
+			});
 
 			const recovered = await recoverMessageAddress({message, signature});
 			expect(getAddress(recovered)).toBe(getAddress(TEST_ADDRESS));
@@ -208,10 +209,10 @@ describe('personal_sign / EIP-191', () => {
 			const provider = createProvider();
 			const message = 'checksum independence';
 
-			const signature = (await provider.request({
+			const signature = await provider.request({
 				method: 'personal_sign',
-				params: [stringToHex(message), TEST_ADDRESS.toLowerCase()],
-			} as any)) as `0x${string}`;
+				params: [stringToHex(message), TEST_ADDRESS.toLowerCase() as `0x${string}`],
+			});
 
 			const recovered = await recoverMessageAddress({message, signature});
 			expect(getAddress(recovered)).toBe(getAddress(TEST_ADDRESS));

@@ -2,6 +2,14 @@
 	"name": "eip-1193-accounts-wrapper",
 	"version": "0.2.0",
 	"description": "extends eip-1193 provider with accounts",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/wighawag/eip-1193-accounts-wrapper.git"
+	},
+	"homepage": "https://github.com/wighawag/eip-1193-accounts-wrapper#readme",
+	"bugs": {
+		"url": "https://github.com/wighawag/eip-1193-accounts-wrapper/issues"
+	},
 	"publishConfig": {
 		"access": "public"
 	},
@@ -22,19 +30,28 @@
 	],
 	"dependencies": {
 		"named-logs": "^0.4.1",
-		"viem": "^2.41.2"
+		"viem": "^2.41.2",
+		"eip-1193": "^0.7.3"
 	},
 	"devDependencies": {
 		"as-soon": "^0.0.11",
-		"eip-1193": "^0.6.5",
 		"tsx": "^4.21.0",
 		"typescript": "^5.9.3",
-		"vitest": "^4.0.16"
+		"vitest": "^4.0.16",
+		"@changesets/cli": "^2.29.8",
+		"prettier": "^3.8.0"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit -p tsconfig-check.json",
 		"build": "tsc --project tsconfig.json",
 		"dev": "as-soon -w src pnpm build",
-		"test": "vitest"
-	}
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"check:type-deps": "node scripts/check-type-deps.mjs .",
+		"prepublishOnly": "pnpm format:check && pnpm build && pnpm check:type-deps",
+		"release:ci": "pnpm prepublishOnly && changeset publish",
+		"format": "prettier --write .",
+		"format:check": "prettier --check ."
+	},
+	"packageManager": "pnpm@10.34.5"
 }

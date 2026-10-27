@@ -114,7 +114,7 @@ Wraps an EIP-1193 provider with local account capabilities.
 
 #### Parameters
 
-- `provider` – An EIP-1193 compatible provider object
+- `provider` – An EIP-1193 provider, typed as eip-1193's `EIP1193CoreProvider`: a browser wallet, a JSON-RPC node and a plain HTTP node provider are all accepted. Every request the wrapper does not answer itself is forwarded to it unchanged.
 - `options` – Optional configuration object:
   - `accounts.privateKeys` – Array of hex-encoded private keys
   - `accounts.mnemonic` – BIP-39 mnemonic phrase
@@ -125,7 +125,12 @@ Wraps an EIP-1193 provider with local account capabilities.
 
 #### Returns
 
-An EIP-1193 provider with account methods added.
+An EIP-1193 provider with account methods added, typed as `EIP1193AccountsProvider`: the methods every provider serves (`CoreMethods`) plus `eth_requestAccounts`. It fits any `EIP1193CoreProvider` slot. If you know the wrapped provider serves more, name its method table, which is an unchecked claim like a cast:
+
+```ts
+import type {NodeMethods} from 'eip-1193';
+const node = extendProviderWithAccounts<NodeMethods>(nodeProvider, options);
+```
 
 ## Supported Methods
 
