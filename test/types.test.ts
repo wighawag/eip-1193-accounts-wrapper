@@ -13,6 +13,7 @@ import type {
 	EIP1193WalletProvider,
 	EIP1193WindowWalletProvider,
 	NodeMethods,
+	WalletMethods,
 } from 'eip-1193';
 import {extendProviderWithAccounts, type EIP1193AccountsProvider} from '../src/index.js';
 
@@ -38,6 +39,7 @@ describe('extendProviderWithAccounts types', () => {
 			const asAccounts: EIP1193AccountsProvider = extended;
 			// it goes straight into a slot typed as the core provider
 			const asCore: EIP1193CoreProvider = extended;
+			const _direct: EIP1193CoreProvider = extendProviderWithAccounts(undefined as unknown as EIP1193NodeProvider);
 			const _accounts: `0x${string}`[] = await extended.request({method: 'eth_requestAccounts'});
 			await extended.request({method: 'eth_accounts'});
 			await extended.request({method: 'eth_chainId'});
@@ -57,6 +59,10 @@ describe('extendProviderWithAccounts types', () => {
 			const node = extendProviderWithAccounts<NodeMethods>(undefined as unknown as EIP1193NodeProvider);
 			await node.request({method: 'net_listening'});
 			await node.request({method: 'eth_requestAccounts'});
+			// positive controls for the @ts-expect-error lines above: the requests themselves are well formed
+			await node.request(subscribeHeads);
+			const wallet = extendProviderWithAccounts<WalletMethods>(undefined as unknown as EIP1193WalletProvider);
+			await wallet.request(switchChain);
 			const asCore: EIP1193CoreProvider = node;
 			return asCore;
 		};
